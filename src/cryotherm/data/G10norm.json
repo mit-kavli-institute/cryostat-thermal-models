@@ -1,0 +1,26 @@
+{
+    "G10norm": {
+        "Material": "G-10 CR Fiberglass (normal direction)",
+        "thermal_conductivity": {
+            "model": "polylog",
+            "coeffs": {
+                "a": -4.1236,
+                "b": 13.788,
+                "c": -26.068,
+                "d": 26.272,
+                "e": -14.663,
+                "f": 4.4954,
+                "g": -0.6905,
+                "h" : 0.0397,
+                "i" : 0.0
+           },
+           "data_range" : [4, 300],
+           "equation_range": [10, 300],
+           "curve_fit_pct_error" : 5,
+           "source": "NIST Cryogenic Material Database",
+           "url": "https://trc.nist.gov/cryogenics/materials/G-10%20CR%20Fiberglass%20Epoxy/G10CRFiberglassEpoxy_rev.htm",
+           "comment" : ""
+        
+        }
+    }
+}

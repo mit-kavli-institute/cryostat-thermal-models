@@ -1,0 +1,26 @@
+{
+    "G10warp": {
+        "Material": "G-10 CR Fiberglass (warp direction)",
+        "thermal_conductivity": {
+            "model": "polylog",
+            "coeffs": {
+                "a": -2.64827,
+                "b": 8.80228,
+                "c": -24.8998,
+                "d": 41.1625,
+                "e": -39.8754,
+                "f": 23.1778,
+                "g": -7.95635,
+                "h" : 1.48806,
+                "i" : -0.11701
+           },
+           "data_range" : [4, 300],
+           "equation_range": [12, 300],
+           "curve_fit_pct_error" : 5,
+           "source": "NIST Cryogenic Material Database",
+           "url": "https://trc.nist.gov/cryogenics/materials/G-10%20CR%20Fiberglass%20Epoxy/G10CRFiberglassEpoxy_rev.htm",
+           "comment" : ""
+           
+        }
+    }
+}

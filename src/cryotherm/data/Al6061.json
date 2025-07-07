@@ -1,0 +1,25 @@
+{
+    "Al6061": {
+        "Material": "6061-T6 Aluminum",
+        "thermal_conductivity": {
+            "model": "polylog",
+            "coeffs": {
+                "a": 0.07918,
+                "b": 1.0957,
+                "c": -0.07277,
+                "d": 0.08084,
+                "e": 0.02803,
+                "f": -0.09464,
+                "g": 0.04179,
+                "h" : -0.00571,
+                "i" : 0.0
+           },
+           "data_range" : [4, 300],
+           "equation_range": [1, 300],
+           "curve_fit_pct_error" : 0.5,
+           "source": "NIST Cryogenic Material Database",
+           "url": "https://trc.nist.gov/cryogenics/materials/6061%20Aluminum/6061_T6Aluminum_rev.htm",
+           "comment" : ""
+        }
+    }
+}

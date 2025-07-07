@@ -1,0 +1,26 @@
+{
+    "SS304L": {
+        "Material": "Stainless Steel 304L",
+        "thermal_conductivity": {
+            "model": "polylog",
+            "coeffs": {
+                "a": -1.4087,
+                "b": 1.3982,
+                "c": 0.2543,
+                "d": -0.6260,
+                "e": 0.2334,
+                "f": 0.4256,
+                "g": -0.4658,
+                "h" : 0.1650,
+                "i" : -0.0199
+           },
+           "data_range" : [4, 300],
+           "equation_range": [1, 300],
+           "curve_fit_pct_error" : 2,
+           "source": "NIST Cryogenic Material Database",
+           "url": "https://trc.nist.gov/cryogenics/materials/304LStainless/304LStainless_rev.htm",
+           "comment" : ""
+        
+        }
+    }
+}
