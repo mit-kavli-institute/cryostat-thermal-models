@@ -50,6 +50,16 @@ class MaterialDatabase:
         else:
             raise ValueError(f"Unknown model '{entry['model']}'")
 
+    def safe_get_k(self, material: str, T: float) -> float:
+        """
+        Like get_k() but CLAMPS temperature to the material’s valid range
+        instead of raising.  Handy for numerics when the solver wanders
+        outside  the table / fit domain.
+        """
+        entry = self._mat(material)
+        T_clamped = min(max(T, entry["T_min"]), entry["T_max"])
+        return self.get_k(material, T_clamped)  # now in‐range
+
     def get_integral(
         self,
         material: str,

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, Literal
 
 from cryotherm.utils import surf_area
 
@@ -32,10 +32,11 @@ class Radiation:
         stage2=None,
         *,
         emissivity1: float,
-        area: float,
+        emissivity2: float | None = None,
+        area: float | None = None,
+        type: Literal["plate", "cylinder", "box"] | None = None,
         view_factor: float = 1.0,
         env_temp: float = 300.0,
-        emissivity2: float | None = None,
         **geom: Any,
     ):
         self.stage1 = stage1

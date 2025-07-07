@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import List
 
 import numpy as np
-from scipy.optimize import root
+from scipy.optimize import least_squares, root
 
 
 class ThermalModel:
@@ -66,13 +66,33 @@ class ThermalModel:
     # -----------------------------------------------------------------
     # public solver
     # -----------------------------------------------------------------
+
     def solve(self, tol: float = 1e-6, method: str = "hybr"):
         T0 = np.array([s.temperature for s in self.free])
-        sol = root(self._balance_equations, T0, method=method, tol=tol)
-        if not sol.success:
-            raise RuntimeError(f"Solver failed: {sol.message}")
 
-        # propagate converged temps
+        try:  # 1st attempt
+            sol = root(self._balance_equations, T0, method=method, tol=tol)
+        except ValueError:
+            sol = None  # skip to retry
+
+        if sol is None or (not sol.success):
+            # ---- second attempt: bounded least-squares -------------
+            bounds_lo = np.zeros_like(T0) + 1.0  # 1 K
+            bounds_hi = np.zeros_like(T0) + 500.0  # 500 K
+            sol2 = least_squares(
+                self._balance_equations,
+                T0,
+                bounds=(bounds_lo, bounds_hi),
+                xtol=tol,
+                ftol=tol,
+                gtol=tol,
+            )
+            if not sol2.success:
+                msg = (sol.message if sol is not None else "") + "\n" + sol2.message
+                raise RuntimeError(f"Solver failed:\n{msg}")
+            sol = sol2
+
+        # propagate solution
         for s, T in zip(self.free, sol.x, strict=True):
             s.temperature = T
         return sol
