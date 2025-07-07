@@ -31,68 +31,86 @@ class ThermalModel:
     # residuals
     # -----------------------------------------------------------------
     def _balance_equations(self, temps: np.ndarray) -> np.ndarray:
-        # update free-stage temps
+        """
+        Residual vector:
+            • fridge stage i :  T_i − T_target(load_i)  = 0
+            • plain  stage i :  netQ_i                  = 0
+        """
+
+        # 0) assign trial temperatures to free stages
         for s, T in zip(self.free, temps, strict=True):
             s.temperature = T
 
-        # zero all netQ
+        # 1) zero tallies
         for s in self.stages:
-            s.net_heat_flow = 0.0
+            s._q_in = s.external_load(s.temperature)
 
-        # conduction
-        for link in self.conductors:
-            T1 = link.stage1.temperature
-            T2 = link.stage2.temperature
-            q = link.heat_flow(T1, T2)
-            link.stage1.net_heat_flow -= q
-            link.stage2.net_heat_flow += q
+        # 2) conduction
+        for c in self.conductors:
+            q = c.heat_flow(c.stage1.temperature, c.stage2.temperature)
+            c.stage1._q_in -= q
+            c.stage2._q_in += q
 
-        # radiation
-        for rad in self.radiators:
-            T1 = rad.stage1.temperature
-            T2 = rad.stage2.temperature if rad.stage2 else None
-            q = rad.heat_flow(T1, T2)
-            rad.stage1.net_heat_flow -= q
-            if rad.stage2:
-                rad.stage2.net_heat_flow += q
+        # 3) radiation
+        for r in self.radiators:
+            if r.stage2 is None:
+                q = r.heat_flow(r.stage1.temperature, None)
+                r.stage1._q_in -= q
+            else:
+                q = r.heat_flow(r.stage1.temperature, r.stage2.temperature)
+                r.stage1._q_in -= q
+                r.stage2._q_in += q
 
-        # fridge & external loads
-        for s in self.stages:
-            s.net_heat_flow -= s.cooling_power(s.temperature)
-            s.net_heat_flow += s.external_load(s.temperature)
+        # 4) build residuals
+        residuals = []
+        for s in self.free:
+            if s.has_fridge:
+                T_target = s.target_temp_for_load(s._q_in)
+                residuals.append(s.temperature - T_target)
+            else:
+                residuals.append(s._q_in)
 
-        return np.array([s.net_heat_flow for s in self.free])
+            # diagnostics
+            """s.net_heat_flow = s._q_in - (
+                s.cooling_power(s.temperature) if s.has_fridge else 0.0
+            )"""
+            s.net_heat_flow = s._q_in
+
+        return np.array(residuals, dtype=float)
 
     # -----------------------------------------------------------------
     # public solver
     # -----------------------------------------------------------------
 
-    def solve(self, tol: float = 1e-6, method: str = "hybr"):
-        T0 = np.array([s.temperature for s in self.free])
+    def solve(self, tol: float = 1e-6):
+        # ---- initial guess ------------------------------------------------
+        T0 = []
+        lo = []
+        hi = []
+        for s in self.free:
+            Tmin, Tmax = s.fridge_bounds
+            Tguess = np.clip(s.temperature, Tmin, Tmax)
+            if s.has_fridge and not (Tmin <= s.temperature <= Tmax):
+                # midpoint of the fridge curve is a robust start
+                Tguess = 0.5 * (Tmin + Tmax)
+            T0.append(Tguess)
+            lo.append(Tmin)
+            hi.append(Tmax)
+        T0 = np.array(T0)
+        bounds = (np.array(lo), np.array(hi))
 
-        try:  # 1st attempt
-            sol = root(self._balance_equations, T0, method=method, tol=tol)
-        except ValueError:
-            sol = None  # skip to retry
+        # ---- bounded least-squares (robust for monotone curves) -----------
+        sol = least_squares(
+            self._balance_equations,
+            T0,
+            bounds=bounds,
+            xtol=tol,
+            ftol=tol,
+            gtol=tol,
+        )
+        if not sol.success:
+            raise RuntimeError(f"Solver failed: {sol.message}")
 
-        if sol is None or (not sol.success):
-            # ---- second attempt: bounded least-squares -------------
-            bounds_lo = np.zeros_like(T0) + 1.0  # 1 K
-            bounds_hi = np.zeros_like(T0) + 500.0  # 500 K
-            sol2 = least_squares(
-                self._balance_equations,
-                T0,
-                bounds=(bounds_lo, bounds_hi),
-                xtol=tol,
-                ftol=tol,
-                gtol=tol,
-            )
-            if not sol2.success:
-                msg = (sol.message if sol is not None else "") + "\n" + sol2.message
-                raise RuntimeError(f"Solver failed:\n{msg}")
-            sol = sol2
-
-        # propagate solution
         for s, T in zip(self.free, sol.x, strict=True):
             s.temperature = T
         return sol

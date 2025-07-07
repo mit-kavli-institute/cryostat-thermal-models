@@ -46,6 +46,7 @@ class Conduction:
         area: float | None = None,
         type: Literal["rect", "cylinder", "tube"] | None = None,
         method: Literal["quad", "legacy", "trapz"] = "quad",
+        name: str | None = None,
         **geom: Any,
     ):
         self.stage1 = stage1
@@ -55,6 +56,7 @@ class Conduction:
         self.db = mat_db
         self.method = method
         self.number = int(number)
+        self.name = name or f"{material} strap"
 
         if area is not None:
             self.area = float(area)

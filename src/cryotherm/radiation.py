@@ -37,6 +37,7 @@ class Radiation:
         type: Literal["plate", "cylinder", "box"] | None = None,
         view_factor: float = 1.0,
         env_temp: float = 300.0,
+        name: str | None = None,
         **geom: Any,
     ):
         self.stage1 = stage1
@@ -47,6 +48,7 @@ class Radiation:
         self.env_temp = float(env_temp)
         # calculate the effective emissivity
         self.eps = self.effective_emissivity(self.eps1, self.eps2)
+        self.name = name or f"Rad {self.stage1.name} ↔ {self.stage2.name}"
 
         if area is not None:
             self.area = float(area)
