@@ -4,15 +4,12 @@ from __future__ import annotations
 from typing import List
 
 import numpy as np
-from scipy.optimize import least_squares, root
+from scipy.optimize import least_squares
 
 
 class ThermalModel:
     """
-    Assemble stages + conductive & radiative links
-    and solve for steady-state (`netQ = 0`) temperatures.
-
-    Stages flagged `fixed=True` are held at their initial temperature.
+    Solve steady-state temperatures and, where requested, heater powers.
     """
 
     def __init__(
@@ -25,25 +22,32 @@ class ThermalModel:
         self.conductors = conductors or []
         self.radiators = radiators or []
 
-        self.free = [s for s in stages if not s.fixed]
+        # split free variables
+        self.temp_vars = [
+            s for s in stages if (not s.fixed) and s.target_temperature is None
+        ]
+        self.heat_vars = [s for s in stages if s.target_temperature is not None]
 
     # -----------------------------------------------------------------
     # residuals
     # -----------------------------------------------------------------
-    def _balance_equations(self, temps: np.ndarray) -> np.ndarray:
+    def _residuals(self, x: np.ndarray) -> np.ndarray:
         """
-        Residual vector:
-            • fridge stage i :  T_i − T_target(load_i)  = 0
-            • plain  stage i :  netQ_i                  = 0
+        Unknown vector ``x``  =  [temps…, heater_powers…]
         """
+        N_t = len(self.temp_vars)
 
-        # 0) assign trial temperatures to free stages
-        for s, T in zip(self.free, temps, strict=True):
-            s.temperature = T
+        # 0) assign trial values
+        for i, s in enumerate(self.temp_vars):
+            s.temperature = x[i]
 
-        # 1) zero tallies
+        for j, s in enumerate(self.heat_vars, start=N_t):
+            s._load = x[j]  # heater power (W)
+            s.temperature = s.target_temperature  # fixed T each iteration
+
+        # 1) zero inbound tallies
         for s in self.stages:
-            s._q_in = s.external_load(s.temperature)
+            s._q_in = s.external_load(s.temperature)  # includes heater if any
 
         # 2) conduction
         for c in self.conductors:
@@ -62,55 +66,63 @@ class ThermalModel:
                 r.stage2._q_in += q
 
         # 4) build residuals
-        residuals = []
-        for s in self.free:
+        res = []
+
+        #   a) temperature unknowns
+        for s in self.temp_vars:
             if s.has_fridge:
                 T_target = s.target_temp_for_load(s._q_in)
-                residuals.append(s.temperature - T_target)
+                res.append(s.temperature - T_target)
             else:
-                residuals.append(s._q_in)
+                res.append(s._q_in)  # want 0 W net
 
-            # diagnostics
-            """s.net_heat_flow = s._q_in - (
-                s.cooling_power(s.temperature) if s.has_fridge else 0.0
-            )"""
+        #   b) heater-power unknowns (temperature is clamped)
+        for s in self.heat_vars:
+            res.append(s._q_in)  # want 0 W net
+
+        # diagnostics (optional)
+        for s in self.stages:
             s.net_heat_flow = s._q_in
 
-        return np.array(residuals, dtype=float)
+        return np.array(res, dtype=float)
 
     # -----------------------------------------------------------------
-    # public solver
+    # public solve
     # -----------------------------------------------------------------
-
     def solve(self, tol: float = 1e-6):
-        # ---- initial guess ------------------------------------------------
-        T0 = []
-        lo = []
-        hi = []
-        for s in self.free:
+        # build initial guess and bounds
+        x0, lo, hi = [], [], []
+
+        for s in self.temp_vars:
             Tmin, Tmax = s.fridge_bounds
             Tguess = np.clip(s.temperature, Tmin, Tmax)
             if s.has_fridge and not (Tmin <= s.temperature <= Tmax):
-                # midpoint of the fridge curve is a robust start
                 Tguess = 0.5 * (Tmin + Tmax)
-            T0.append(Tguess)
+            x0.append(Tguess)
             lo.append(Tmin)
             hi.append(Tmax)
-        T0 = np.array(T0)
-        bounds = (np.array(lo), np.array(hi))
 
-        # ---- bounded least-squares (robust for monotone curves) -----------
+        for s in self.heat_vars:
+            # heater power guess = previous external_load (≥0)
+            P0 = max(s.external_load, 0.0)
+            x0.append(P0)
+            lo.append(0.0)  # heater cannot cool
+            hi.append(1e6)  # 1 MW upper cap
+
         sol = least_squares(
-            self._balance_equations,
-            T0,
-            bounds=bounds,
+            self._residuals,
+            np.array(x0),
+            bounds=(np.array(lo), np.array(hi)),
             xtol=tol,
             ftol=tol,
             gtol=tol,
         )
         if not sol.success:
-            raise RuntimeError(f"Solver failed: {sol.message}")
+            raise RuntimeError("Solver failed: " + sol.message)
 
-        for s, T in zip(self.free, sol.x, strict=True):
-            s.temperature = T
+        # write back final values (temps already set inside residuals loop)
+        N_t = len(self.temp_vars)
+        for j, s in enumerate(self.heat_vars, start=N_t):
+            s._load = sol.x[j]  # final heater power (W)
+
         return sol

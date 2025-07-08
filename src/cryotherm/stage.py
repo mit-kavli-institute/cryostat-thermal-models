@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Callable
 
+import numpy as np
 from scipy.optimize import brentq
 
 from cryotherm.fridge import curve as get_fridge_curve
@@ -32,11 +33,15 @@ class Stage:
         fridge_curve: Callable[[float], float] | None = None,
         fixed: bool = False,
         external_load: float | Callable[[float], float] = 0.0,
+        target_temperature: float | None = None,
     ):
         self.name = name
         self.temperature = float(T0)
         self.fixed = bool(fixed)
         self._load = external_load
+        self.target_temperature = (
+            float(target_temperature) if target_temperature is not None else None
+        )
 
         # updated each solver iteration
         self.net_heat_flow = 0.0
@@ -57,32 +62,62 @@ class Stage:
             return 1.0, 500.0
         return self._fridge.T_min, self._fridge.T_max
 
-    def target_temp_for_load(self, load_W: float) -> float:
+    def target_temp_for_load(self, load_W: float, *, n_scan: int = 200) -> float:
         """
-        Return the temperature at which the fridge delivers `load_W`.
+        Return T such that P_fridge(T) ≈ load_W.
 
-        • If the stage has no fridge we simply return self.temperature
-          (the caller will make residual = net_Q).
-        • If the requested load exceeds the fridge envelope we clamp to
-          the warm end (max lift formally = 0).
+        Works for curves where lift increases or decreases with T,
+        and clamps to Tmin/Tmax if the requested load is unattainable.
         """
         if not self.has_fridge:
-            return self.temperature
+            return self.temperature  # plain stage: nothing to do
 
         Tmin, Tmax = self.fridge_bounds
-        f = lambda T: self.cooling_power(T) - load_W
+        P = self.cooling_power
 
-        # Detect if load outside the lift curve
-        if f(Tmin) < 0 and f(Tmax) < 0:
-            return Tmin  # fridge can't remove that much → cold limit
-        if f(Tmin) > 0 and f(Tmax) > 0:
-            return Tmax  # load too small → warm end (≈0 W lift)
+        # Early out if an endpoint already matches
+        if np.isclose(P(Tmin), load_W, rtol=1e-4, atol=1e-4):
+            return Tmin
+        if np.isclose(P(Tmax), load_W, rtol=1e-4, atol=1e-4):
+            return Tmax
 
-        return brentq(f, Tmin, Tmax, xtol=1e-4)
+        # Does load lie within [Pmin, Pmax] ?
+        Pmin, Pmax = min(P(Tmin), P(Tmax)), max(P(Tmin), P(Tmax))
+        if load_W < Pmin:
+            return Tmin if P(Tmin) < P(Tmax) else Tmax  # pick colder end
+        if load_W > Pmax:
+            return Tmax if P(Tmax) > P(Tmin) else Tmin  # pick warmer end
+
+        # Bracket a root by linear scan (robust to non-monotonic wiggles)
+        Ts = np.linspace(Tmin, Tmax, n_scan)
+        Ps = P(Ts) - load_W
+        sign = np.sign(Ps)
+
+        # find first sign change
+        idx = np.where(np.diff(sign))[0]
+        if idx.size == 0:  # numerical corner-case
+            return Tmin
+
+        i = idx[0]
+        T_low, T_high = Ts[i], Ts[i + 1]
+        return brentq(lambda T: P(T) - load_W, T_low, T_high, xtol=1e-4)
 
     # ---------------------------------------
-    def cooling_power(self, T: float) -> float:
-        return 0.0 if self._fridge is None else float(self._fridge(T))
+    def cooling_power(self, T):
+        """
+        Return cooler lift at temperature(s) T.
+
+        * Works for scalar or NumPy array input.
+        * If no fridge attached → 0.
+        """
+        if self._fridge is None:
+            return 0.0
+
+        # vector-friendly: if T is ndarray leave it be, else cast to float
+        if isinstance(T, np.ndarray):
+            return self._fridge(T)  # already vectorised
+        else:
+            return float(self._fridge(float(T)))
 
     def external_load(self, T: float) -> float:
         if callable(self._load):
