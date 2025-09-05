@@ -1,0 +1,10 @@
+{
+  "manganin": {
+    "thermal_conductivity": {
+      "model": "table",
+      "file": "raw/Manganin.csv",     
+      "delimiter": ",",           
+      "skip_rows": 0              
+    }
+  }
+}

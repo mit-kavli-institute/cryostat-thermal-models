@@ -86,6 +86,11 @@ class ThermalModel:
 
         return np.array(res, dtype=float)
 
+    @staticmethod
+    def _initial_heater_guess(stage):
+        """Return a numeric starting value even if user passed a callable."""
+        return 0.0 if callable(stage._load) else float(stage._load)
+
     # -----------------------------------------------------------------
     # public solve
     # -----------------------------------------------------------------
@@ -104,7 +109,7 @@ class ThermalModel:
 
         for s in self.heat_vars:
             # heater power guess = previous external_load (≥0)
-            P0 = max(s.external_load, 0.0)
+            P0 = self._initial_heater_guess(s)
             x0.append(P0)
             lo.append(0.0)  # heater cannot cool
             hi.append(1e6)  # 1 MW upper cap
@@ -126,3 +131,34 @@ class ThermalModel:
             s._load = sol.x[j]  # final heater power (W)
 
         return sol
+
+    def report(self):
+        print("\n=== Balance at current temperatures ===")
+        for s in self.stages:
+            print(f"{s.name:15s}: T={s.temperature:7.2f} K")
+        print("\nConduction:")
+        for c in self.conductors:
+            # always report hot→cold
+            sH, sC = (
+                (c.stage1, c.stage2)
+                if c.stage1.temperature > c.stage2.temperature
+                else (c.stage2, c.stage1)
+            )
+            q = c.heat_flow(sH.temperature, sC.temperature)
+            print(
+                f"  {getattr(c,'name',c.material):20s} {sH.name}→{sC.name}: {q:.4f} W"
+            )
+        print("Radiation:")
+        for r in self.radiators:
+            if r.stage2 is None:
+                continue
+            sH, sC = (
+                (r.stage1, r.stage2)
+                if r.stage1.temperature > r.stage2.temperature
+                else (r.stage2, r.stage1)
+            )
+            q = r.heat_flow(sH.temperature, sC.temperature)
+            print(f"  {getattr(r,'name','Rad'):20s} {sH.name}→{sC.name}: {q:.4f} W")
+        print("\nStage netQ (should be ~0 for free stages):")
+        for s in self.stages:
+            print(f"  {s.name:15s}: netQ = {s.net_heat_flow:+.6f} W")

@@ -1,0 +1,25 @@
+{
+    "CuRRR50": {
+        "Material": "OFHC Copper RRR 50",
+        "thermal_conductivity": {
+            "model": "nist-copperfit",
+            "coeffs": {
+                "a": 1.8743,
+                "b": -0.41538,
+                "c": -0.6018,
+                "d": 0.13294,
+                "e": 0.26426,
+                "f": -0.0219,
+                "g": -0.051276,
+                "h" : 0.0014871,
+                "i" : 0.003723
+           },
+           "data_range" : [4, 300],
+           "equation_range": [4, 300],
+           "curve_fit_pct_error" : 2.0,
+           "source": "NIST Cryogenic Material Database",
+           "url": "https://trc.nist.gov/cryogenics/materials/OFHC%20Copper/OFHC_Copper_rev1.htm",
+           "comment" : ""
+        }
+    }
+}

@@ -26,15 +26,30 @@ class MaterialDatabase:
     # ------------------------------------------------------------------ #
     # public API
     # ------------------------------------------------------------------ #
-    def __init__(self, path: str | pathlib.Path):
+    def __init__(
+        self, path: str | pathlib.Path, *, recursive: bool = False, debug: bool = False
+    ):
         path = pathlib.Path(path)
         self.materials: dict[str, dict] = {}
+        self._sources: dict[str, pathlib.Path] = {}  # material -> json file
+        self._load_errors: list[tuple[pathlib.Path, str, str]] = (
+            []
+        )  # (file, material, message)
+        self._duplicates: list[tuple[str, pathlib.Path, pathlib.Path]] = (
+            []
+        )  # (material, old_file, new_file)
+        self._debug = bool(debug)
 
+        files: list[pathlib.Path]
         if path.is_dir():
-            for jf in path.glob("*.json"):
-                self._load_json_file(jf)
+            files = (
+                list(path.rglob("*.json")) if recursive else list(path.glob("*.json"))
+            )
         else:
-            self._load_json_file(path)
+            files = [path]
+
+        for jf in files:
+            self._load_json_file(jf)
 
         if not self.materials:
             raise RuntimeError(f"No materials found in '{path}'")
@@ -43,8 +58,8 @@ class MaterialDatabase:
         entry = self._mat(material)
         if entry["model"] == "polylog":
             return self._eval_polylog(entry, T)
-        elif entry["model"] == "polynomial":
-            return self._eval_polynomial(entry, T)
+        elif entry["model"] == "nist-copperfit":
+            return self._eval_nist_copperfit(entry, T)
         elif entry["model"] == "table":
             return self._eval_table(entry, T)
         else:
@@ -160,47 +175,142 @@ class MaterialDatabase:
         """Return a list of available material names."""
         return list(self.materials.keys())
 
+    def report(self) -> None:
+        print(f"Loaded materials: {self.get_materials()}")
+        if self._duplicates:
+            print("\nDuplicates (new overwrote old):")
+            for name, oldf, newf in self._duplicates:
+                print(f" - {name}: {oldf.name} -> {newf.name}")
+        if self._load_errors:
+            print("\nErrors:")
+            for f, name, msg in self._load_errors:
+                print(f" - {f.name} :: {name}: {msg}")
+
     # ------------------------------------------------------------------ #
     # file parsing helpers
     # ------------------------------------------------------------------ #
     def _load_json_file(self, file_path: pathlib.Path) -> None:
-        with file_path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
+        try:
+            with file_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            self._load_errors.append((file_path, "<file>", f"JSON load failed: {e!r}"))
+            if self._debug:
+                print(f"[ERROR] {file_path}: {e!r}")
+            return
 
-        # each top-level key is a material name
         for mat_name, blob in data.items():
-            tc = blob.get("thermal_conductivity") or blob
-            model = tc["model"].lower()
+            try:
+                tc = blob.get("thermal_conductivity") or blob
+                model_raw = tc["model"]
+            except Exception as e:
+                self._load_errors.append(
+                    (file_path, mat_name, f"Missing/invalid keys: {e!r}")
+                )
+                if self._debug:
+                    print(f"[ERROR] {file_path}:{mat_name} -> {e!r}")
+                continue
 
-            if model == "polylog":  # dict of labelled coeffs
-                coeff_letters = "abcdefghi"
-                coeffs = [tc["coeffs"].get(coeff, 0.0) for coeff in coeff_letters]
-                T_min, T_max = tc.get("equation_range", [0.0, float("inf")])
+            # Accept a few aliases
+            model = str(model_raw).lower().strip()
+            aliases = {"polynomial": "polylog", "csv": "table"}
+            model = aliases.get(model, model)
 
-                self.materials[mat_name] = {
-                    "model": "polylog",
-                    "coeffs": coeffs,
-                    "T_min": T_min,
-                    "T_max": T_max,
-                }
+            try:
+                if model == "polylog":
+                    coeff_letters = "abcdefghi"
+                    coeffs = [tc["coeffs"].get(letter, 0.0) for letter in coeff_letters]
+                    T_min, T_max = tc.get("equation_range", [0.0, float("inf")])
+                    entry = {
+                        "model": "polylog",
+                        "coeffs": coeffs,
+                        "T_min": float(T_min),
+                        "T_max": float(T_max),
+                    }
 
-            elif model == "table":
-                T_arr = np.array(tc["temperatures"], dtype=float)
-                k_arr = np.array(tc["k_values"], dtype=float)
-                self.materials[mat_name] = {
-                    "model": "table",
-                    "T_min": float(T_arr[0]),
-                    "T_max": float(T_arr[-1]),
-                    "interp": interp1d(
-                        T_arr,
-                        k_arr,
-                        kind="linear",
-                        bounds_error=False,
-                        fill_value=(k_arr[0], k_arr[-1]),
-                    ),
-                }
-            else:
-                raise ValueError(f"Unknown model '{model}' in {file_path}")
+                elif model == "nist-copperfit":
+                    coeff_letters = "abcdefghi"
+                    coeffs = [tc["coeffs"].get(letter, 0.0) for letter in coeff_letters]
+                    T_min, T_max = tc.get("equation_range", [0.0, float("inf")])
+                    entry = {
+                        "model": "nist-copperfit",
+                        "coeffs": coeffs,
+                        "T_min": float(T_min),
+                        "T_max": float(T_max),
+                    }
+
+                elif model == "table":
+                    # Option A: external CSV
+                    if "file" in tc:
+                        csv_path = pathlib.Path(tc["file"])
+                        if not csv_path.is_absolute():
+                            csv_path = file_path.parent / csv_path
+                        delimiter = tc.get("delimiter", ",")
+                        skip_rows = int(tc.get("skip_rows", 0))
+                        col_T = int(tc.get("col_T", 0))
+                        col_k = int(tc.get("col_k", 1))
+                        if not csv_path.exists():
+                            raise FileNotFoundError(f"CSV not found: {csv_path}")
+                        data_arr = np.loadtxt(
+                            csv_path,
+                            delimiter=delimiter,
+                            skiprows=skip_rows,
+                            usecols=(col_T, col_k),
+                            ndmin=2,
+                            comments="#",
+                        )
+                        T_arr = np.asarray(data_arr[:, 0], dtype=float)
+                        k_arr = np.asarray(data_arr[:, 1], dtype=float)
+                    else:
+                        # Option B: inline arrays
+                        T_arr = np.array(tc["temperatures"], dtype=float)
+                        k_arr = np.array(tc["k_values"], dtype=float)
+
+                    if T_arr.size != k_arr.size or T_arr.size < 2:
+                        raise ValueError("need ≥2 rows and equal lengths for T and k")
+
+                    # sort + dedupe T
+                    order = np.argsort(T_arr)
+                    T_arr, k_arr = T_arr[order], k_arr[order]
+                    T_arr, idx = np.unique(T_arr, return_index=True)
+                    k_arr = k_arr[idx]
+
+                    entry = {
+                        "model": "table",
+                        "T_min": float(T_arr[0]),
+                        "T_max": float(T_arr[-1]),
+                        "interp": interp1d(
+                            T_arr,
+                            k_arr,
+                            kind="linear",
+                            bounds_error=False,
+                            fill_value=(k_arr[0], k_arr[-1]),
+                        ),
+                    }
+
+                else:
+                    raise ValueError(f"Unknown model '{model}'")
+
+                # store, noting duplicates
+                if mat_name in self.materials:
+                    self._duplicates.append(
+                        (mat_name, self._sources[mat_name], file_path)
+                    )
+                    if self._debug:
+                        print(
+                            f"[WARN] duplicate '{mat_name}' -> {file_path.name} overrides {self._sources[mat_name].name}"
+                        )
+                self.materials[mat_name] = entry
+                self._sources[mat_name] = file_path
+
+            except Exception as e:
+                self._load_errors.append(
+                    (file_path, mat_name, f"{e.__class__.__name__}: {e}")
+                )
+                if self._debug:
+                    print(
+                        f"[ERROR] {file_path}:{mat_name} -> {e.__class__.__name__}: {e}"
+                    )
 
     # ------------------------------------------------------------------ #
     # model evaluators
@@ -214,14 +324,32 @@ class MaterialDatabase:
         self._range_check(entry, T)
         logT = np.log10(T)
         logk = self._poly_log10(entry["coeffs"], logT)
-        return 10.0**logk
+        return float(10.0**logk)
 
-    def _eval_polynomial(self, entry: dict, T: float) -> float:
-        """Supporting the *old* list-coeff polynomial model."""
+    def _eval_nist_copperfit(self, entry: dict, T: float) -> float:
+        """
+        NIST OFHC copper fit (W/m·K):
+        log10(k) = (a + c*T**0.5 + e*T + g*T**1.5 + i*T**2) /
+                    (1 + b*T**0.5 + d*T + f*T**1.5 + h*T**2)
+        => k = 10 ** (numerator / denominator)
+        Coefficients are in the order a, b, c, d, e, f, g, h, i.
+        ref: https://trc.nist.gov/cryogenics/materials/OFHC%20Copper/OFHC_Copper_rev1.htm
+        """
         self._range_check(entry, T)
-        logT = np.log10(T)
-        logk = self._poly_log10(entry["coeffs"], logT)
-        return 10.0**logk
+        a, b, c, d, e, f, g, h, i = entry["coeffs"]
+
+        rt = np.sqrt(T)
+        t32 = T * rt
+        t2 = T * T
+
+        num = a + c * rt + e * T + g * t32 + i * t2
+        den = 1.0 + b * rt + d * T + f * t32 + h * t2
+
+        log10k = num / den
+        # Optional safety clamp if you want to guard against bad inputs:
+        # log10k = float(np.clip(log10k, -12, 12))  # k in ~[1e-12, 1e12] W/mK
+
+        return float(10.0**log10k)
 
     def _eval_table(self, entry: dict, T: float) -> float:
         if T < entry["T_min"]:
@@ -276,4 +404,5 @@ class MaterialDatabase:
                         fill_value=(k_arr[0], k_arr[-1]),
                     ),
                 }
+
         return out
