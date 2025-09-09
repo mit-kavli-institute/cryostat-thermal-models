@@ -22,18 +22,17 @@ class ThermalModel:
         self.conductors = conductors or []
         self.radiators = radiators or []
 
-        # split free variables
+        # free temps: not fixed and not heater-sized
         self.temp_vars = [
             s for s in stages if (not s.fixed) and s.target_temperature is None
         ]
+        # heater-sized: target_temperature is specified
         self.heat_vars = [s for s in stages if s.target_temperature is not None]
 
     # -----------------------------------------------------------------
-    # residuals
-    # -----------------------------------------------------------------
     def _residuals(self, x: np.ndarray) -> np.ndarray:
         """
-        Unknown vector ``x``  =  [temps…, heater_powers…]
+        Unknown vector x = [free_temperatures..., heater_powers...]
         """
         N_t = len(self.temp_vars)
 
@@ -42,12 +41,12 @@ class ThermalModel:
             s.temperature = x[i]
 
         for j, s in enumerate(self.heat_vars, start=N_t):
-            s._load = x[j]  # heater power (W)
-            s.temperature = s.target_temperature  # fixed T each iteration
+            s._heater_W = float(x[j])  # <— only the heater is unknown
+            s.temperature = s.target_temperature
 
-        # 1) zero inbound tallies
+        # 1) zero inbound tallies with externals (baseline + heater)
         for s in self.stages:
-            s._q_in = s.external_load(s.temperature)  # includes heater if any
+            s._q_in = s.external_load(s.temperature)
 
         # 2) conduction
         for c in self.conductors:
@@ -65,10 +64,10 @@ class ThermalModel:
                 r.stage1._q_in -= q
                 r.stage2._q_in += q
 
-        # 4) build residuals
+        # 4) residuals
         res = []
 
-        #   a) temperature unknowns
+        # a) temperature unknowns
         for s in self.temp_vars:
             if s.has_fridge:
                 T_target = s.target_temp_for_load(s._q_in)
@@ -76,26 +75,24 @@ class ThermalModel:
             else:
                 res.append(s._q_in)  # want 0 W net
 
-        #   b) heater-power unknowns (temperature is clamped)
+        # b) heater-power unknowns (temperature is clamped)
         for s in self.heat_vars:
-            res.append(s._q_in)  # want 0 W net
+            res.append(s._q_in)  # want 0 W net at target T
 
-        # diagnostics (optional)
+        # diagnostics
         for s in self.stages:
             s.net_heat_flow = s._q_in
 
         return np.array(res, dtype=float)
 
     @staticmethod
-    def _initial_heater_guess(stage):
-        """Return a numeric starting value even if user passed a callable."""
-        return 0.0 if callable(stage._load) else float(stage._load)
+    def _initial_heater_guess(stage) -> float:
+        # start from whatever the user last set (default 0)
+        return float(getattr(stage, "_heater_W", 0.0))
 
     # -----------------------------------------------------------------
-    # public solve
-    # -----------------------------------------------------------------
     def solve(self, tol: float = 1e-6):
-        # build initial guess and bounds
+        # initial guess and bounds
         x0, lo, hi = [], [], []
 
         for s in self.temp_vars:
@@ -108,11 +105,10 @@ class ThermalModel:
             hi.append(Tmax)
 
         for s in self.heat_vars:
-            # heater power guess = previous external_load (≥0)
             P0 = self._initial_heater_guess(s)
             x0.append(P0)
-            lo.append(0.0)  # heater cannot cool
-            hi.append(1e6)  # 1 MW upper cap
+            lo.append(0.0)
+            hi.append(1e6)  # 0…1 MW
 
         sol = least_squares(
             self._residuals,
@@ -125,20 +121,22 @@ class ThermalModel:
         if not sol.success:
             raise RuntimeError("Solver failed: " + sol.message)
 
-        # write back final values (temps already set inside residuals loop)
+        # Write back final heater powers (temps are already set in residuals)
         N_t = len(self.temp_vars)
         for j, s in enumerate(self.heat_vars, start=N_t):
-            s._load = sol.x[j]  # final heater power (W)
+            s._heater_W = float(sol.x[j])
 
         return sol
 
     def report(self):
         print("\n=== Balance at current temperatures ===")
         for s in self.stages:
-            print(f"{s.name:15s}: T={s.temperature:7.2f} K")
+            extra = ""
+            if s in self.heat_vars:
+                extra = f"  (heater={s.heater_power:.4f} W, baseline={s._baseline_load(s.temperature):.4f} W)"
+            print(f"{s.name:15s}: T={s.temperature:7.2f} K{extra}")
         print("\nConduction:")
         for c in self.conductors:
-            # always report hot→cold
             sH, sC = (
                 (c.stage1, c.stage2)
                 if c.stage1.temperature > c.stage2.temperature
@@ -146,7 +144,7 @@ class ThermalModel:
             )
             q = c.heat_flow(sH.temperature, sC.temperature)
             print(
-                f"  {getattr(c,'name',c.material):20s} {sH.name}→{sC.name}: {q:.4f} W"
+                f"  {getattr(c, 'name', c.material):20s} {sH.name}→{sC.name}: {q:.4f} W"
             )
         print("Radiation:")
         for r in self.radiators:
@@ -158,7 +156,9 @@ class ThermalModel:
                 else (r.stage2, r.stage1)
             )
             q = r.heat_flow(sH.temperature, sC.temperature)
-            print(f"  {getattr(r,'name','Rad'):20s} {sH.name}→{sC.name}: {q:.4f} W")
+            print(
+                f"  {getattr(r, 'name', 'Radiation'):20s} {sH.name}→{sC.name}: {q:.4f} W"
+            )
         print("\nStage netQ (should be ~0 for free stages):")
         for s in self.stages:
             print(f"  {s.name:15s}: netQ = {s.net_heat_flow:+.6f} W")

@@ -6,11 +6,16 @@ from matplotlib.patches import FancyArrowPatch
 def visualize_model(
     model,
     *,
-    cmap={"cond": "#0072B2", "rad": "#D55E00", "ext": "#009E73"},
+    cmap={
+        "cond": "#0072B2",  # conduction (blue)
+        "rad": "#D55E00",  # radiation  (orange)
+        "ext": "#009E73",  # baseline external load (green)
+        "heat": "#CC79A7",  # heater load (magenta)
+    },
     scale=50,  # linewidth (pt) when arrow = 100% of stage load
     dx_cond=0.12,
     dx_rad=0.12,
-    dx_ext=0.12,
+    dx_ext=0.12,  # horizontal spacing between ext and heater columns
 ):
     # ---------- helpers -------------------------------------------------
     def _fmt_power(P_W: float) -> str:
@@ -32,6 +37,19 @@ def visualize_model(
                 return f"{val:.1f} W"
             else:
                 return f"{val:.0f} W"
+
+    def _split_loads(stage, T):
+        """
+        Return (baseline_external_W, heater_W) for the stage at temperature T.
+        Backward-compatible with older Stage that didn't separate these.
+        """
+        heater = float(getattr(stage, "heater_power", getattr(stage, "_heater_W", 0.0)))
+        if hasattr(stage, "_baseline_load"):
+            base = float(stage._baseline_load(T))
+        else:
+            # external_load() may already include heater; subtract if present
+            base = float(stage.external_load(T)) - heater
+        return base, heater
 
     # ---------- stage ordering (cold→hot) -------------------------------
     stages = sorted(model.stages, key=lambda s: s.temperature)
@@ -62,10 +80,12 @@ def visualize_model(
         qW = abs(r.heat_flow(hot.temperature, cold.temperature))
         stage_total_W[cold] += qW
 
-    # External loads heat their own stage
+    # Baseline external + heater both heat their own stage
+    per_stage_loads = {}
     for s in stages:
-        qW = abs(s.external_load(s.temperature))
-        stage_total_W[s] += qW
+        base_W, heater_W = _split_loads(s, s.temperature)
+        per_stage_loads[s] = (base_W, heater_W)
+        stage_total_W[s] += abs(base_W) + abs(heater_W)
 
     # Avoid 0 division; also keep a copy for display before padding
     stage_total_display_W = stage_total_W.copy()
@@ -101,6 +121,7 @@ def visualize_model(
     def _arrow(x, y1, y2, qW, totalW, col, label_prefix):
         pct = 100.0 * abs(qW) / max(totalW, 1e-12)
         lw = max(1.0, min(scale, (pct / 100.0) * scale))  # cap at `scale`
+        # Direction: positive load flows into stage (downward for ext/heater).
         patch = FancyArrowPatch(
             (x, y1),
             (x, y2),
@@ -154,14 +175,23 @@ def visualize_model(
         _arrow(x0_rad + r_idx * dx_rad, y[hot], y[cold], qW, total, cmap["rad"], "Rad")
         r_idx += 1
 
-    # ---------- external loads (downward onto stage) --------------------
+    # ---------- external baseline & heater loads -----------------------
+    # Two columns on the far right: baseline (x_ext) and heater (x_heat)
     x_ext = 0.92
-    for idx, s in enumerate(stages):
-        qW = s.external_load(s.temperature)
-        if abs(qW) < 1e-12:
-            continue
+    x_heat = x_ext + dx_ext
+    for s in stages:
+        base_W, heater_W = per_stage_loads[s]
         total = stage_total_W[s]
-        _arrow(x_ext + idx * 0.0, y[s] + 0.15, y[s], qW, total, cmap["ext"], "Ext")
+
+        # Baseline external (positive heats the stage; draw downward)
+        if abs(base_W) >= 1e-12:
+            y_top, y_bot = (y[s] + 0.18, y[s]) if base_W >= 0 else (y[s], y[s] + 0.18)
+            _arrow(x_ext, y_top, y_bot, base_W, total, cmap["ext"], "Ext")
+
+        # Heater (if present)
+        if abs(heater_W) >= 1e-12:
+            y_top, y_bot = (y[s] + 0.18, y[s])  # heater is ≥ 0 by construction
+            _arrow(x_heat, y_top, y_bot, heater_W, total, cmap["heat"], "Heater")
 
     # Cosmetics
     ax.set_xlim(0, 1)
