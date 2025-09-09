@@ -1,0 +1,25 @@
+{
+    "Kapton": {
+        "Material": "Kapton (Polyimide)",
+        "thermal_conductivity": {
+            "model": "polylog",
+            "coeffs": {
+                "a": 5.73101,
+                "b": -39.5199,
+                "c": 79.9313,
+                "d": -83.8572,
+                "e": 50.9157,
+                "f": -17.9835,
+                "g": 3.42413,
+                "h" : -0.27133,
+                "i" : 0.0
+           },
+           "data_range" : [4, 300],
+           "equation_range": [1, 300],
+           "curve_fit_pct_error" : 2.0,
+           "source": "NIST Cryogenic Material Database",
+           "url": "https://trc.nist.gov/cryogenics/materials/Polyimide%20Kapton/PolyimideKapton_rev.htm",
+           "comment" : ""
+        }
+    }
+}
