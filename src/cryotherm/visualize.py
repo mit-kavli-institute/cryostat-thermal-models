@@ -6,6 +6,7 @@ from matplotlib.patches import FancyArrowPatch
 def visualize_model(
     model,
     *,
+    title="Thermal Model Heat Flow Breakdown",
     cmap={
         "cond": "#0072B2",  # conduction (blue)
         "rad": "#D55E00",  # radiation  (orange)
@@ -197,5 +198,5 @@ def visualize_model(
     ax.set_xlim(0, 1)
     ax.set_ylim(-1, len(stages))
     ax.axis("off")
-    ax.set_title("Thermal-model heat-flow breakdown", pad=20)
+    ax.set_title(title, pad=20)
     plt.tight_layout()
