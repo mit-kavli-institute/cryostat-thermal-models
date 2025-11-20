@@ -2,13 +2,12 @@
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
-[project]                                  # PEP 621 metadata
-name = "cryostat-thermal-models"           # distribution / PyPI name
+[project]
+name = "cryostat-thermal-models"
 version = "0.1.0"
 description = "Modular cryostat thermal-analysis toolkit"
 readme = "README.md"
 requires-python = ">=3.9"
-#license = {file = "LICENSE"}
 authors = [{name = "Nate Lourie", email = "nlourie@mit.edu"}]
 keywords = ["cryostat", "thermal", "model", "heat-transfer"]
 
@@ -28,6 +27,21 @@ dev = [
   "black",
 ]
 
-[tool.setuptools]                          # setuputils-specific conf
-package-dir = {"" = "src"}                 # src-layout
-packages = ["cryotherm"]                   # explicitly list or use find-namespace
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"cryotherm" = [
+    "data/*.json",
+    "data/**/*.json",
+    "data/*.csv",
+    "data/**/*.csv",
+    "data/*.png",
+    "data/**/*.png",
+    "data/*.pdf",
+    "data/**/*.pdf",
+]
